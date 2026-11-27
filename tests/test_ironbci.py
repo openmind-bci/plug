@@ -17,6 +17,7 @@ from openmind_plug.sources import ironbci as ironbci_module
 from openmind_plug.sources.ironbci import (
     DATA_CHARACTERISTIC,
     EXPERIMENTAL,
+    IronBCIConfig,
     IronBCIError,
     IronBCISource,
     PacketDecoder,
@@ -168,7 +169,7 @@ class TestSource:
         uv = random_uv(40)
         with caplog.at_level(logging.WARNING), source:
             assert source.is_running
-            assert env.scan_args == ("EAREEG", "11:22", ironbci_module.SCAN_TIMEOUT)
+            assert env.scan_args == (("EAREEG",), "11:22", ironbci_module.SCAN_TIMEOUT)
             client = env.client
             assert client is not None and client.address == "11:22"
             assert client.notify_char == DATA_CHARACTERISTIC
@@ -297,3 +298,65 @@ class TestBleakDefaults:
         pytest.importorskip("bleak")
         client = ironbci_module._bleak_client("AA:BB:CC:DD:EE:FF")
         assert hasattr(client, "start_notify")
+
+
+class TestConfig:
+    """Every hardware assumption lives in IronBCIConfig (PLUG-090 checklist)."""
+
+    def test_defaults_are_the_documented_assumptions(self) -> None:
+        config = IronBCIConfig()
+        assert config.ble_names == ("EAREEG", "IronBCI")
+        assert config.data_characteristic == DATA_CHARACTERISTIC
+        assert config.srate == 250.0
+        assert config.montage == "C"
+        assert config.reference == "unknown"
+        assert (config.gain, config.vref, config.counter) == (1.0, 4.5, False)
+        assert config.scan_timeout == ironbci_module.SCAN_TIMEOUT
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{"gain": 0.0}, {"vref": -1.0}, {"srate": 0.0}, {"ble_names": ()}, {"scan_timeout": 0.0}],
+    )
+    def test_invalid_values_are_refused(self, kwargs: dict[str, Any]) -> None:
+        with pytest.raises(ValueError):
+            IronBCIConfig(**kwargs)
+
+    def test_source_uses_only_the_config(self) -> None:
+        from openmind_plug.montage import Montage
+
+        order = ("C4", "C3", "Cz", "FC3", "FC4", "CP3", "CP4", "CPz")
+        config = IronBCIConfig(
+            ble_names=("MyIron",),
+            data_characteristic="0000aaaa-0000-1000-8000-00805f9b34fb",
+            srate=200.0,
+            montage=Montage("measured", order),
+            reference="linked ears",
+            gain=2.0,
+            counter=True,
+            scan_timeout=3.0,
+        )
+        env = FakeBLEEnvironment()
+        clock = FakeClock(500.0)
+        source = make_source(env, clock, config=config)
+        assert source.config == config
+        assert source.info.srate == 200.0
+        assert source.info.labels == order
+        assert source.info.reference == "linked ears"
+        uv = random_uv(20)
+        with source:
+            assert env.scan_args == (("MyIron",), None, 3.0)
+            client = env.client
+            assert client is not None
+            assert client.notify_char == "0000aaaa-0000-1000-8000-00805f9b34fb"
+            client.notify(build_packet(uv, gain=2.0, counter=0))
+            samples, stamps = read_all(source, 20)
+        np.testing.assert_allclose(samples, uv, atol=LSB_UV)
+        np.testing.assert_allclose(np.diff(stamps), 1 / 200.0)
+
+    def test_keyword_arguments_override_the_config(self) -> None:
+        env = FakeBLEEnvironment()
+        source = make_source(env, config=IronBCIConfig(gain=4.0), name="Unit7", gain=2.0)
+        assert source.config.ble_names == ("Unit7",)
+        assert source.config.gain == 2.0
+        with source:
+            assert env.scan_args == (("Unit7",), None, ironbci_module.SCAN_TIMEOUT)

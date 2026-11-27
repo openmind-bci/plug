@@ -424,9 +424,12 @@ openmind-plug stream --source ironbci --ble-address <address>
 - `list-sources` shows `ironbci` as `experimental` once `bleak` is installed.
 
 ```python
-from openmind_plug.sources.ironbci import IronBCISource
+from openmind_plug.sources.ironbci import IronBCIConfig, IronBCISource
 
 source = IronBCISource(address="...", montage="C")
+# Every hardware assumption (names, characteristic, rate, channel order,
+# reference, scale, counter) is a field of IronBCIConfig:
+source = IronBCISource(address="...", config=IronBCIConfig(gain=24.0, counter=True))
 ```
 
 Tests use `tests/fake_ironbci.py`, a simulated headset injected through the

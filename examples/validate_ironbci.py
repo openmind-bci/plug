@@ -30,6 +30,7 @@ validate the hardware; the reference detector lives in OpenMind Core.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import datetime as dt
 import math
 import socket
@@ -595,15 +596,12 @@ def build_parser() -> argparse.ArgumentParser:
 def build_source(args: argparse.Namespace) -> EEGSource:
     if args.source == "synthetic":
         return SyntheticSource(montage="C", seed=args.seed)
-    from openmind_plug.sources.ironbci import IronBCISource
+    from openmind_plug.sources.ironbci import IronBCIConfig, IronBCISource
 
-    return IronBCISource(
-        name=args.ble_name,
-        address=args.ble_address,
-        montage="C",
-        gain=args.gain,
-        counter=args.ble_counter,
-    )
+    config = IronBCIConfig(montage="C", gain=args.gain, counter=args.ble_counter)
+    if args.ble_name:
+        config = dataclasses.replace(config, ble_names=(args.ble_name,))
+    return IronBCISource(address=args.ble_address, config=config)
 
 
 def main(argv: list[str] | None = None) -> int:

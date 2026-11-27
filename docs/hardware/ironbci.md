@@ -77,6 +77,19 @@ uV  = raw * 4.5 / 16777215 * 1e6        # about 0.268 uV per count
 
 ### Assumptions to check with the headset (PLUG-090)
 
+The driver reads every one of them from `IronBCIConfig`
+(`openmind_plug.sources.ironbci`), so a measured value is changed in one place:
+
+| Assumption | `IronBCIConfig` field | Default |
+|---|---|---|
+| 1. Gain and scale | `gain`, `vref` | `1.0`, `4.5` V |
+| 2-3. Packet counter, samples per notification | `counter` | `False` |
+| 4. Timestamps (device clock) | `srate` | `250.0` Hz |
+| 5. Channel order | `montage` | `"C"` |
+| 6. Reference and bias | `reference` | `"unknown"` |
+| 7. Advertised name | `ble_names` | `("EAREEG", "IronBCI")` |
+| GATT data characteristic | `data_characteristic` | `0000fe42-...` |
+
 1. **Gain and scale.** The official scale (0.268 uV/count) may be wrong by a
    factor 2 and/or by the PGA gain. Check by injecting a known sine (function
    generator through a divider, or the ADS1299 internal test signal if exposed)
@@ -200,10 +213,11 @@ need an external trigger (for example a known signal injected at the input).
 
 1. Record the figures of each run in the PLUG-090 task and keep the reports
    outside the repositories.
-2. Update `sources/ironbci.py` from the results: channel labels (assumption 5),
-   `reference` (assumption 6), default gain or scale (assumption 1), timestamp
-   re-anchoring (assumption 4), packet counter layout (assumptions 2 and 3),
-   advertised name (assumption 7), reconnection (assumption 9).
+2. Update the defaults of `IronBCIConfig` in `sources/ironbci.py` from the
+   results: channel order (`montage`, assumption 5), `reference` (assumption 6),
+   `gain` or `vref` (assumption 1), `srate` (assumption 4), `counter`
+   (assumptions 2 and 3), `ble_names` (assumption 7). Timestamp re-anchoring
+   (assumption 4) and reconnection (assumption 9) are code changes.
 3. Update the tests with the real packet sizes and counter layout.
 4. Rewrite the "Assumptions" section: confirmed facts move to the protocol notes,
    unresolved points stay listed.

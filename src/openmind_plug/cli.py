@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import threading
 from collections.abc import Callable
@@ -793,6 +794,7 @@ def _is_ironbci_error(error: BaseException) -> bool:
 def _build_ironbci(options: _IronBCIOptions, montage: Montage | None) -> EEGSource:
     from openmind_plug.sources.ironbci import (
         IRONBCI_INSTALL,
+        IronBCIConfig,
         IronBCISource,
     )
 
@@ -800,13 +802,10 @@ def _build_ironbci(options: _IronBCIOptions, montage: Montage | None) -> EEGSour
         "IronBCI-8 driver is experimental: not validated on hardware yet.", fg=typer.colors.YELLOW
     )
     try:
-        source = IronBCISource(
-            name=options.name,
-            address=options.address,
-            montage=montage or "C",
-            gain=options.gain,
-            counter=options.counter,
-        )
+        config = IronBCIConfig(montage=montage or "C", gain=options.gain, counter=options.counter)
+        if options.name:
+            config = dataclasses.replace(config, ble_names=(options.name,))
+        source = IronBCISource(address=options.address, config=config)
     except ImportError:
         _fail(f"the ironbci source needs the ironbci extra: {IRONBCI_INSTALL}")
     except ValueError as error:

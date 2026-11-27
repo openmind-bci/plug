@@ -97,10 +97,10 @@ class FakeBLEEnvironment:
         self.found = found
         self.fail_connect = fail_connect
         self.client: FakeBLEClient | None = None
-        self.scan_args: tuple[str | None, str | None, float] | None = None
+        self.scan_args: tuple[tuple[str, ...], str | None, float] | None = None
 
-    async def scanner(self, name: str | None, address: str | None, timeout: float) -> str:
-        self.scan_args = (name, address, timeout)
+    async def scanner(self, names: tuple[str, ...], address: str | None, timeout: float) -> str:
+        self.scan_args = (names, address, timeout)
         if not self.found:
             raise RuntimeError("device not found")
         return address or "AA:BB:CC:DD:EE:FF"

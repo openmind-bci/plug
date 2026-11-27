@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `IronBCIConfig` gathers every assumption of the IronBCI-8 driver (BLE names,
+  data characteristic, sampling rate, channel order, reference, gain, Vref,
+  packet counter) in one place; `IronBCISource(config=...)`, the CLI and
+  `examples/validate_ironbci.py` use it, and `docs/hardware/ironbci.md` maps each
+  PLUG-090 assumption to its field.
 - `examples/validate_ironbci.py`: guided hardware validation (connection, rate and
   packet loss, channel order, alpha test, jaw clench, latency to LSL) that runs
   today on the synthetic source and later on the headset, with a Markdown report

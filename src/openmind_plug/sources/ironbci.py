@@ -30,7 +30,7 @@ import queue
 import threading
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Final, Protocol
 
 import numpy as np
@@ -76,6 +76,54 @@ _FULL_SCALE: Final[int] = (1 << 24) - 1
 _COUNTER_MODULO: Final[int] = 256
 
 _log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class IronBCIConfig:
+    """Every assumption the driver makes about the IronBCI-8, in one place.
+
+    The defaults come from the public documentation and are **unverified** until
+    the hardware validation (PLUG-090). The numbers refer to "Assumptions to check
+    with the headset" in ``docs/hardware/ironbci.md``; once a value is measured,
+    change it here and nowhere else.
+
+    Attributes:
+        ble_names: Advertised names to look for, compared case-insensitively
+            (assumption 7).
+        data_characteristic: GATT characteristic that notifies the samples.
+        srate: Sampling rate of the device clock, used for timestamps
+            (assumption 4).
+        montage: Montage naming the 8 inputs in order, i.e. the channel order
+            (assumption 5).
+        reference: Reference of the recording, written in the stream metadata
+            (assumption 6).
+        gain: Divisor applied to the ADC counts (assumption 1).
+        vref: Reference voltage of the ADS1299 in volts (assumption 1).
+        counter: Whether payloads start with a one-byte packet counter
+            (assumptions 2 and 3).
+        scan_timeout: Seconds to look for the headset.
+
+    Raises:
+        ValueError: If a number is not positive or ``ble_names`` is empty.
+    """
+
+    ble_names: tuple[str, ...] = DEFAULT_BLE_NAMES
+    data_characteristic: str = DATA_CHARACTERISTIC
+    srate: float = SAMPLE_RATE
+    montage: str | Montage = DEFAULT_MONTAGE
+    reference: str = "unknown"
+    gain: float = 1.0
+    vref: float = DEFAULT_VREF
+    counter: bool = False
+    scan_timeout: float = SCAN_TIMEOUT
+
+    def __post_init__(self) -> None:
+        for name in ("srate", "gain", "vref", "scan_timeout"):
+            if not getattr(self, name) > 0:
+                value = getattr(self, name)
+                raise ValueError(f"IronBCIConfig.{name} must be positive, got {value}")
+        if not self.ble_names:
+            raise ValueError("IronBCIConfig.ble_names must name at least one device")
 
 
 class IronBCIError(RuntimeError):
@@ -191,8 +239,8 @@ class BLEClient(Protocol):
     async def stop_notify(self, char_specifier: str) -> None: ...
 
 
-#: ``scanner(name, address, timeout)`` returns the address of the headset.
-BLEScanner = Callable[[str | None, str | None, float], Awaitable[str]]
+#: ``scanner(names, address, timeout)`` returns the address of the headset.
+BLEScanner = Callable[[tuple[str, ...], str | None, float], Awaitable[str]]
 
 #: ``client_factory(address)`` returns an unconnected client.
 BLEClientFactory = Callable[[str], BLEClient]
@@ -214,15 +262,20 @@ class IronBCISource(EEGSource):
     counter is available) advance the index without producing values, so the
     gap is visible downstream.
 
+    The hardware assumptions (names, characteristic, rate, channel order,
+    reference, scale, counter) come from ``config`` only; the keyword arguments
+    below are shortcuts that replace one field of it.
+
     Args:
-        name: Advertised BLE name to look for (default: ``EAREEG`` or
-            ``IronBCI``).
+        name: Advertised BLE name to look for (replaces ``config.ble_names``).
         address: BLE address (a UUID on macOS); skips the scan.
-        montage: Montage name or object naming the 8 inputs (default ``"C"``).
-        gain: Divisor applied to the counts (see :class:`PacketDecoder`).
-        vref: Reference voltage in volts.
-        counter: Whether payloads carry a packet counter (assumption).
-        scan_timeout: Seconds to look for the headset.
+        montage: Montage name or object naming the 8 inputs
+            (``config.montage``).
+        gain: Divisor applied to the counts (``config.gain``).
+        vref: Reference voltage in volts (``config.vref``).
+        counter: Whether payloads carry a packet counter (``config.counter``).
+        scan_timeout: Seconds to look for the headset (``config.scan_timeout``).
+        config: The driver's assumptions (default :class:`IronBCIConfig`).
         scanner: Replaces the ``bleak`` scanner (tests).
         client_factory: Replaces ``bleak.BleakClient`` (tests).
         clock: Replaces ``pylsl.local_clock`` (tests).
@@ -236,38 +289,51 @@ class IronBCISource(EEGSource):
         self,
         name: str | None = None,
         address: str | None = None,
-        montage: str | Montage = DEFAULT_MONTAGE,
-        gain: float = 1.0,
-        vref: float = DEFAULT_VREF,
-        counter: bool = False,
-        scan_timeout: float = SCAN_TIMEOUT,
+        montage: str | Montage | None = None,
+        gain: float | None = None,
+        vref: float | None = None,
+        counter: bool | None = None,
+        scan_timeout: float | None = None,
+        *,
+        config: IronBCIConfig | None = None,
         scanner: BLEScanner | None = None,
         client_factory: BLEClientFactory | None = None,
         clock: Callable[[], float] = pylsl.local_clock,
     ) -> None:
         super().__init__()
+        overrides: dict[str, Any] = {
+            "ble_names": None if name is None else (name,),
+            "montage": montage,
+            "gain": gain,
+            "vref": vref,
+            "counter": counter,
+            "scan_timeout": scan_timeout,
+        }
+        self._config = replace(
+            config or IronBCIConfig(),
+            **{key: value for key, value in overrides.items() if value is not None},
+        )
+        cfg = self._config
         if scanner is None or client_factory is None:
             _import_bleak()  # fail early with the install hint
         self._scanner = scanner or _bleak_scan
         self._client_factory = client_factory or _bleak_client
-        resolved = get_montage(montage) if isinstance(montage, str) else montage
+        resolved = get_montage(cfg.montage) if isinstance(cfg.montage, str) else cfg.montage
         if resolved.n_channels != N_CHANNELS:
             raise ValueError(
                 f"the IronBCI-8 has {N_CHANNELS} inputs; montage {resolved.name!r} "
                 f"has {resolved.n_channels}"
             )
-        self._name = name
         self._address = address
-        self._scan_timeout = scan_timeout
         self._clock = clock
-        self._decoder = PacketDecoder(gain=gain, vref=vref, counter=counter)
+        self._decoder = PacketDecoder(gain=cfg.gain, vref=cfg.vref, counter=cfg.counter)
         self._info = StreamInfo(
-            srate=SAMPLE_RATE,
+            srate=cfg.srate,
             channels=resolved.channels(unit="uV"),
             manufacturer="IronBCI",
             model="IronBCI-8",
             driver="ironbci",
-            reference="unknown",
+            reference=cfg.reference,
             montage=resolved.name,
         )
         self._queue: queue.Queue[_Chunk] = queue.Queue()
@@ -285,6 +351,11 @@ class IronBCISource(EEGSource):
     @property
     def info(self) -> StreamInfo:
         return self._info
+
+    @property
+    def config(self) -> IronBCIConfig:
+        """The assumptions this source runs with."""
+        return self._config
 
     @property
     def lost_packets(self) -> int:
@@ -310,7 +381,7 @@ class IronBCISource(EEGSource):
         self._ready.clear()
         self._thread = threading.Thread(target=self._run, name="ironbci-ble", daemon=True)
         self._thread.start()
-        self._ready.wait(timeout=self._scan_timeout + 30.0)
+        self._ready.wait(timeout=self._config.scan_timeout + 30.0)
         if self._error is not None or not self._ready.is_set():
             error = self._error
             self._shutdown_thread()
@@ -340,11 +411,12 @@ class IronBCISource(EEGSource):
     async def _session(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._stop_event = asyncio.Event()
-        address = await self._scanner(self._name, self._address, self._scan_timeout)
+        cfg = self._config
+        address = await self._scanner(cfg.ble_names, self._address, cfg.scan_timeout)
         client = self._client_factory(address)
         await client.connect()
         try:
-            await client.start_notify(DATA_CHARACTERISTIC, self._on_notify)
+            await client.start_notify(cfg.data_characteristic, self._on_notify)
             self._ready.set()
             while not self._stop_event.is_set():
                 if not client.is_connected:
@@ -354,7 +426,7 @@ class IronBCISource(EEGSource):
                     await asyncio.wait_for(self._stop_event.wait(), timeout=0.25)
         finally:
             with suppress(Exception):
-                await client.stop_notify(DATA_CHARACTERISTIC)
+                await client.stop_notify(cfg.data_characteristic)
             with suppress(Exception):
                 await client.disconnect()
 
@@ -412,12 +484,12 @@ def _import_bleak() -> Any:
     return bleak
 
 
-async def _bleak_scan(name: str | None, address: str | None, timeout: float) -> str:
+async def _bleak_scan(names: tuple[str, ...], address: str | None, timeout: float) -> str:
     """Return the address of the headset, scanning by name unless an address is given."""
     if address is not None:
         return address
     bleak = _import_bleak()
-    accepted = {name.casefold()} if name else {n.casefold() for n in DEFAULT_BLE_NAMES}
+    accepted = {n.casefold() for n in names}
 
     def matches(device: Any, advertisement: Any) -> bool:
         found = device.name or getattr(advertisement, "local_name", None) or ""
@@ -425,7 +497,7 @@ async def _bleak_scan(name: str | None, address: str | None, timeout: float) -> 
 
     device = await bleak.BleakScanner.find_device_by_filter(matches, timeout=timeout)
     if device is None:
-        wanted = name or " or ".join(DEFAULT_BLE_NAMES)
+        wanted = " or ".join(names)
         raise IronBCIError(
             f"no BLE device named {wanted} found in {timeout:g} s: is the headset on, "
             "charged, unplugged from the charger, and not connected to another app?"

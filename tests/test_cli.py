@@ -172,7 +172,7 @@ def test_stream_ironbci_reports_a_missing_headset(monkeypatch: pytest.MonkeyPatc
     fake_bleak.BleakClient = object  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "bleak", fake_bleak)
 
-    async def not_found(name: str | None, address: str | None, timeout: float) -> str:
+    async def not_found(names: tuple[str, ...], address: str | None, timeout: float) -> str:
         raise ironbci.IronBCIError("no BLE device named EAREEG found")
 
     monkeypatch.setattr(ironbci, "_bleak_scan", not_found)
@@ -180,6 +180,41 @@ def test_stream_ironbci_reports_a_missing_headset(monkeypatch: pytest.MonkeyPatc
     assert result.exit_code == 2
     assert "experimental" in result.output
     assert "no BLE device" in result.output
+
+
+def test_stream_ironbci_options_go_through_the_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+    import types
+    from importlib.machinery import ModuleSpec
+
+    from openmind_plug.sources import ironbci
+
+    fake_bleak = types.ModuleType("bleak")
+    fake_bleak.__spec__ = ModuleSpec("bleak", None)
+    fake_bleak.BleakClient = object  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "bleak", fake_bleak)
+    seen: list[ironbci.IronBCIConfig] = []
+    real_init = ironbci.IronBCISource.__init__
+
+    def spy_init(self: ironbci.IronBCISource, *args: object, **kwargs: object) -> None:
+        real_init(self, *args, **kwargs)  # type: ignore[arg-type]
+        seen.append(self.config)
+
+    async def not_found(names: tuple[str, ...], address: str | None, timeout: float) -> str:
+        raise ironbci.IronBCIError(f"no BLE device named {' or '.join(names)} found")
+
+    monkeypatch.setattr(ironbci.IronBCISource, "__init__", spy_init)
+    monkeypatch.setattr(ironbci, "_bleak_scan", not_found)
+    result = runner.invoke(
+        app,
+        ["stream", "-s", "ironbci", "--ble-name", "Unit7", "--gain", "24", "--ble-counter",
+         "--no-keyboard", "--duration", "1"],
+    )  # fmt: skip
+    assert result.exit_code == 2
+    assert "no BLE device named Unit7" in result.output
+    (config,) = seen
+    assert config.ble_names == ("Unit7",)
+    assert (config.gain, config.counter, config.montage) == (24.0, True, "C")
 
 
 def test_stream_replay_unknown_dataset() -> None:
