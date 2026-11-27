@@ -6,6 +6,7 @@ import os
 import py_compile
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -28,11 +29,43 @@ def run(script: str, *args: str, timeout: float = 30) -> subprocess.Popen[str]:
     )
 
 
+class Output:
+    """Collect a process's output in the background and wait for a given line."""
+
+    def __init__(self, process: subprocess.Popen[str]) -> None:
+        self.lines: list[str] = []
+        self._changed = threading.Condition()
+        self._thread = threading.Thread(target=self._read, args=(process,), daemon=True)
+        self._thread.start()
+
+    def _read(self, process: subprocess.Popen[str]) -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            with self._changed:
+                self.lines.append(line)
+                self._changed.notify_all()
+
+    def wait_for(self, text: str, timeout: float) -> bool:
+        """Wait until a line contains ``text``; ``False`` after ``timeout`` seconds."""
+        with self._changed:
+            return self._changed.wait_for(lambda: any(text in x for x in self.lines), timeout)
+
+    def text(self, timeout: float) -> str:
+        """All the output, once the process has closed it."""
+        self._thread.join(timeout)
+        return "".join(self.lines)
+
+
 def test_stream_synthetic_feeds_print_band_power() -> None:
-    producer = run("stream_synthetic.py", "--duration", "6", "--period", "1")
+    # Start the consumer only once the producer streams, and keep streaming well
+    # past the 3 s the consumer needs: a busy machine can be slow to start either.
+    producer = run("stream_synthetic.py", "--duration", "15", "--period", "1")
+    producer_output = Output(producer)
+    assert producer_output.wait_for("Streaming openmind-eeg", timeout=60), producer_output.text(5)
     consumer = run("print_band_power.py", "--duration", "3")
-    consumer_out, _ = consumer.communicate(timeout=30)
-    producer_out, _ = producer.communicate(timeout=30)
+    consumer_out, _ = consumer.communicate(timeout=60)
+    producer.wait(timeout=60)
+    producer_out = producer_output.text(timeout=10)
     assert consumer.returncode == 0, consumer_out
     assert producer.returncode == 0, producer_out
     assert "state: left" in producer_out
