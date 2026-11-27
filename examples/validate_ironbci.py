@@ -156,8 +156,15 @@ def collect(
 
 
 def _internet_reachable() -> bool:
+    """Whether the machine has a route to the internet, without sending anything.
+
+    ``connect`` on a UDP socket only asks the operating system for a route to
+    the address: no packet leaves the machine. It fails when there is no route
+    (Wi-Fi, Ethernet and mobile data off).
+    """
     try:
-        with socket.create_connection(("1.1.1.1", 53), timeout=1.5):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("1.1.1.1", 53))
             return True
     except OSError:
         return False

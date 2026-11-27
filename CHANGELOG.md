@@ -105,5 +105,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `examples/validate_ironbci.py` checks that the machine is offline (step a)
+  locally, from the routing table, instead of opening a TCP connection to
+  1.1.1.1: the validation no longer sends a packet to a public server.
 - `openmind-plug list-sources` sizes the status column to the longest status, so
   a `needs: pip install ...` hint no longer shifts the description column.
